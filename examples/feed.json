@@ -1,0 +1,21 @@
+{
+  "videos": [
+    {
+      "id": "sintel",
+      "title": "Sintel · 辛特尔",
+      "description": "Blender 开放动画短片",
+      "published": "2010-09-27",
+      "poster": "https://storage.googleapis.com/shaka-asset-icons/sintel.png",
+      "credit": "© Blender Foundation · CC BY 3.0 · durian.blender.org",
+      "page": "https://durian.blender.org/",
+      "streams": [
+        {
+          "label": "自适应 · 最高 4K",
+          "url": "https://storage.googleapis.com/shaka-demo-assets/sintel-mp4-only/dash.mpd",
+          "width": 3840,
+          "height": 1636
+        }
+      ]
+    }
+  ]
+}

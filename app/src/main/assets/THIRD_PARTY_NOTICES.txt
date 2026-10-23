@@ -1,0 +1,17 @@
+QingYing uses AndroidX Activity, RecyclerView, Media3 and WorkManager
+from the Android Open Source Project / Google, and their runtime dependencies,
+including Kotlin (JetBrains), kotlinx.coroutines and Guava (Google).
+These components are distributed under the Apache License, Version 2.0.
+The license is included as APACHE-2.0.txt in this APK.
+
+AndroidX: https://android.googlesource.com/platform/frameworks/support/
+Media3: https://github.com/androidx/media
+Kotlin: https://github.com/JetBrains/kotlin
+Coroutines: https://github.com/Kotlin/kotlinx.coroutines
+Guava: https://github.com/google/guava
+
+The linked Sintel film and poster are copyright Blender Foundation,
+durian.blender.org, licensed CC BY 3.0:
+https://creativecommons.org/licenses/by/3.0/
+The video is streamed from Shaka Player's public demonstration assets.
+No video file is bundled in the APK.
