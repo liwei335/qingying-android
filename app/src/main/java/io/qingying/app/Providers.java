@@ -18,7 +18,11 @@ public final class Providers {
         } catch (java.io.UnsupportedEncodingException e) { throw new IllegalStateException(e); }
     }
     public static List<Video> fetch(Repository.Source source, String query, int page) throws Exception {
-        if (source.kind.equals("cms")) return cms(Net.text(cmsUrl(source.url, query, page)), source.url, source.name);
+        if(source.kind.equals("hongguo"))return Hongguo.search(query,page);
+        if(source.kind.equals("cms")){
+            Net.Response response=Net.get(cmsUrl(source.url,query,page),2*1024*1024,false,RecommendationFeeds.UA,source.url);
+            if(response.code!=200)throw new java.io.IOException("HTTP "+response.code);return cms(response.text(),source.url,source.name);
+        }
         return FeedParser.parse(Net.text(source.url), source.url, source.url);
     }
     public static List<Video> cms(String body, String source, String name) throws Exception {
@@ -45,7 +49,7 @@ public final class Providers {
                 for (int e = Math.max(0, episodes.length - 600); e < episodes.length; e++) {
                     int split = episodes[e].indexOf('$'); if (split < 0) continue;
                     String url = FeedParser.https(episodes[e].substring(split + 1));
-                    if (url.isEmpty()) continue;
+                    if (!directMedia(url)) continue;
                     String episode = episodes[e].substring(0, split);
                     Video.Stream stream = new Video.Stream(url, episode + " · " + (g < names.length ? names[g] : "线路 " + (g+1)), 0);
                     stream.episode = episode.matches("(?i)(HD.*|BD.*|4K|2160p|1080p|720p|正片|蓝光|超清|高清)") ? "" : episode; v.streams.add(stream);
@@ -54,6 +58,9 @@ public final class Providers {
             if (!v.title.isEmpty() && !v.streams.isEmpty()) result.add(v);
         }
         return result;
+    }
+    static boolean directMedia(String url){
+        try{return !FeedParser.https(url).isEmpty()&&java.net.URI.create(url).getPath().toLowerCase(java.util.Locale.ROOT).matches(".*\\.(m3u8|mpd|mp4|m4v|webm|mkv)$");}catch(Exception ignored){return false;}
     }
     public static List<Video> demo() {
         Video v = new Video(); v.source = "builtin"; v.id = "sintel-4k"; v.title = "Sintel · 辛特尔";

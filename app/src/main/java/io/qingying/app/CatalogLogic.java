@@ -20,6 +20,15 @@ public final class CatalogLogic {
     public static int playerHeight(int width, int height, float ratio) {
         return Math.max(1, Math.min(Math.round(width / Math.max(0.5f, ratio)), Math.round(height * .57f)));
     }
+    public static Video bestResource(Video wanted, java.util.List<Video> options, String source) {
+        Video best=null;
+        for(Video item:options){
+            if(item.isCloud()||item.streams.isEmpty()||item.missing()||!sameTitle(wanted,item)||(!source.isEmpty()&&!source.equals(item.source)))continue;
+            if(best==null||resourceScore(item)>resourceScore(best))best=item;
+        }
+        return best;
+    }
+    private static int resourceScore(Video video){return (video.position>0?8:0)+(video.reachable()?4:0)+(video.favorite?2:0)+(video.is4k()?1:0);}
     public static int resumeIndex(Video video) {
         for (int i=0;i<video.streams.size();i++) if (!video.lastStream.isEmpty() && video.streams.get(i).url.equals(video.lastStream)) return i;
         for (int i=0;i<video.streams.size();i++) if (!video.lastEpisode.isEmpty() && episodeKey(video.streams.get(i).episode).equals(episodeKey(video.lastEpisode))) return i;

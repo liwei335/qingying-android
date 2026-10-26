@@ -55,16 +55,22 @@ public final class MainActivity extends ComponentActivity {
     private int tab, filter, page = 1;
     private boolean searching;
     private String workStatus = "", query = "";
-    private String selectedSource="";
-    private volatile int resourceRequest;
-    private AlertDialog resourceLoading;
+    private static final int HOME=0,LIBRARY=1,HISTORY=2,MINE=3,SETTINGS=4;
+    private String selectedSource="",selectedTrendProvider="";
+    private List<Video> playbackHistory=new ArrayList<>();
+    private List<String> searchHistory=new ArrayList<>();
+    private LinearLayout searchHistoryPreview,categoryChips;
+    private HorizontalScrollView categoryScroller;
+    private TextView trendProviderButton,sourceButton;
+    private volatile int resourceRequest,searchRequest;
+    private String resourceStatus="";
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable filterTask = this::filter;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state); app = QingYingApp.app(this);
         selectedSource=QingYingApp.prefs(this).getString("selectedSource","");
-        if (state != null) { tab=state.getInt("tab"); filter=state.getInt("filter"); query=state.getString("query",""); }
+        if (state != null) { tab=state.getInt("tab"); filter=state.getInt("filter"); query=state.getString("query","");selectedTrendProvider=state.getString("trendProvider",""); }
         root = Ui.col(this); root.setBackgroundColor(Ui.BG); setContentView(root);
         ViewCompat.setOnApplyWindowInsetsListener(root,(v,insets) -> {
             Insets i=insets.getInsets(WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout());
@@ -81,59 +87,76 @@ public final class MainActivity extends ComponentActivity {
             boolean changed=!workStatus.equals(next); workStatus=next; updateStatus(); if(changed) reload();
         });
         if(System.currentTimeMillis()-QingYingApp.prefs(this).getLong("checkedAt",0)>24*60*60*1000L) QingYingApp.refresh(this);
-        app.io.execute(()->{boolean empty=false;for(String group:Recommendations.GROUPS)if(app.repo.recommendationTime(group)==0)empty=true;
+        app.io.execute(()->{boolean empty=false;for(RecommendationFeeds.Feed feed:RecommendationFeeds.ALL)if(app.repo.recommendationTime(feed.id)==0)empty=true;
+            for(Repository.Source source:app.repo.sources())if(source.synced==0)empty=true;
             if(empty)runOnUiThread(()->{if(!isDestroyed())QingYingApp.refresh(this);});});
     }
     @Override protected void onResume() { super.onResume(); reload(); }
-    @Override protected void onSaveInstanceState(Bundle out) { super.onSaveInstanceState(out); out.putInt("tab",tab);out.putInt("filter",filter);out.putString("query",query); }
-    @Override protected void onDestroy() { resourceRequest++;if(resourceLoading!=null)resourceLoading.dismiss();handler.removeCallbacks(filterTask); super.onDestroy(); }
+    @Override protected void onSaveInstanceState(Bundle out) { super.onSaveInstanceState(out); out.putInt("tab",tab);out.putInt("filter",filter);out.putString("query",query);out.putString("trendProvider",selectedTrendProvider); }
+    @Override protected void onDestroy() { resourceRequest++;cancelSearch();handler.removeCallbacks(filterTask); super.onDestroy(); }
+    @Override protected void onStop(){resourceRequest++;resourceStatus="";cancelSearch();super.onStop();}
     private void reload() {
         app.io.execute(() -> {
-            List<Video> loaded=app.repo.videos(); List<Repository.Source> src=app.repo.sources();
+            List<Video> loaded=app.repo.videos(),watched=app.repo.playbackHistory();List<String> searches=app.repo.searchHistory(); List<Repository.Source> src=app.repo.sources();
             java.util.Map<String,List<Video>> ranked=new java.util.HashMap<>();java.util.Map<String,Long> times=new java.util.HashMap<>();java.util.Map<String,String> errors=new java.util.HashMap<>();
-            for(String group:Recommendations.GROUPS){ranked.put(group,app.repo.recommendations(group));times.put(group,app.repo.recommendationTime(group));errors.put(group,app.repo.recommendationError(group));}
-            runOnUiThread(() -> { if(isDestroyed())return; videos.clear();videos.addAll(loaded);sources=src;
+            for(String group:Recommendations.GROUPS){
+                List<Video> entries=new ArrayList<>();long oldest=0;List<String> unavailable=new ArrayList<>();
+                for(RecommendationFeeds.Feed feed:RecommendationFeeds.forGroup(group)){
+                    List<Video> list=app.repo.recommendations(feed.id);
+                    for(Video v:list){if(v.trendFeed.isEmpty())v.trendFeed=feed.id;if(v.trendProvider.isEmpty())v.trendProvider=feed.provider;}
+                    entries.addAll(list);long at=app.repo.recommendationTime(feed.id);if(at>0)oldest=oldest==0?at:Math.min(oldest,at);
+                    if((at==0||!app.repo.recommendationError(feed.id).isEmpty())&&!unavailable.contains(feed.provider))unavailable.add(feed.provider);
+                }
+                ranked.put(group,entries);times.put(group,oldest);errors.put(group,String.join("、",unavailable));
+            }
+            runOnUiThread(() -> { if(isDestroyed())return; videos.clear();videos.addAll(loaded);sources=src;playbackHistory=watched;searchHistory=searches;
                 trends.clear();trends.putAll(ranked);trendTimes.clear();trendTimes.putAll(times);trendErrors.clear();trendErrors.putAll(errors);
                 boolean exists=selectedSource.isEmpty()||selectedSource.equals("builtin");for(Repository.Source s:src)if(s.url.equals(selectedSource))exists=true;if(!exists)selectedSource="";
-                if(tab==4) sourceScreen();else filter(); updateStatus(); });
+                if(tab==SETTINGS)sourceScreen();else if(tab==HISTORY)historyScreen();else{filter();renderSearchPreview();}updateStatus(); });
         });
     }
     private void showTab(int index) {
-        if(tab!=index)filter=0;tab=index; content.removeAllViews(); nav.removeAllViews();
-        String[] names={"热播","动漫","片库","我的","设置"};
+        resourceRequest++;resourceStatus="";
+        if(tab!=index){filter=0;cancelSearch();}tab=index; content.removeAllViews(); nav.removeAllViews();
+        String[] names={"热播","片库","记录","我的","设置"};
         for(int i=0;i<names.length;i++) { final int n=i;
             TextView b=Ui.button(this,names[i],i==tab,v->showTab(n));
             Ui.pad(b,2,8);
             LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0,Ui.dp(this,50),1);p.setMargins(Ui.dp(this,3),0,Ui.dp(this,3),0);nav.addView(b,p);
         }
-        if(tab==4)sourceScreen();else libraryScreen();
+        if(tab==SETTINGS)sourceScreen();else if(tab==HISTORY)historyScreen();else libraryScreen();
     }
     private void libraryScreen() {
         LinearLayout header=Ui.col(this); Ui.pad(header,22,14); content.addView(header);
         LinearLayout brand=Ui.row(this);
-        brand.addView(Ui.title(this,tab==0?"清影 · 热播":tab==1?"动漫推荐":tab==2?"资源片库":"我的片单",28),new LinearLayout.LayoutParams(0,-2,1));
+        brand.addView(Ui.title(this,tab==HOME?"清影 · 热播":tab==LIBRARY?"资源片库":"我的片单",28),new LinearLayout.LayoutParams(0,-2,1));
         brand.addView(Ui.button(this,"↻ 更新",false,v->{workStatus="等待网络，准备更新…";updateStatus();QingYingApp.refresh(this);}));header.addView(brand);
-        TextView subtitle=Ui.text(this,tab<=1?"近期热门内容 · 选择片源观看":tab==2?"选择资源与画质，找到合适的播放线路":"喜欢的内容，接着看。",13,Ui.MUTED);header.addView(subtitle,Ui.margin(this,-1,-2,8));
+        TextView subtitle=Ui.text(this,tab==HOME?"多平台推荐 · 中国热播优先":tab==LIBRARY?"选择资源与画质，找到合适的播放线路":"喜欢的内容，接着看。",13,Ui.MUTED);header.addView(subtitle,Ui.margin(this,-1,-2,8));
         status=Ui.text(this,"正在读取本地片单…",11,Ui.MUTED);header.addView(status,Ui.margin(this,-1,-2,12));
         LinearLayout input=Ui.row(this); input.setBackground(Ui.shape(this,Ui.CARD,16));Ui.pad(input,12,2);
         search=new EditText(this);search.setSingleLine();search.setTextSize(14);search.setTextColor(Ui.TEXT);search.setHintTextColor(Ui.MUTED);
         search.setHint("搜索片名、类型");search.setBackgroundColor(android.graphics.Color.TRANSPARENT);search.setText(query);
         input.addView(search,new LinearLayout.LayoutParams(0,Ui.dp(this,48),1));
         input.addView(Ui.button(this,"搜索资源",false,v->onlineSearch()));header.addView(input,Ui.margin(this,-1,-2,16));
+        search.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);
+        search.setOnEditorActionListener((v,action,event)->{if(action==android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH){onlineSearch();return true;}return false;});
+        searchHistoryPreview=Ui.col(this);header.addView(searchHistoryPreview);renderSearchPreview();
         search.addTextChangedListener(new TextWatcher(){public void beforeTextChanged(CharSequence s,int a,int c,int f){}
-            public void onTextChanged(CharSequence s,int a,int b,int c){query=s.toString();handler.removeCallbacks(filterTask);handler.postDelayed(filterTask,160);}
+            public void onTextChanged(CharSequence s,int a,int b,int c){query=s.toString();renderSearchPreview();handler.removeCallbacks(filterTask);handler.postDelayed(filterTask,160);}
             public void afterTextChanged(Editable e){} });
-        HorizontalScrollView scroller=new HorizontalScrollView(this);scroller.setHorizontalScrollBarEnabled(false);
+        HorizontalScrollView scroller=new HorizontalScrollView(this);scroller.setHorizontalScrollBarEnabled(false);categoryScroller=scroller;
         LinearLayout sourceRow=Ui.row(this);
-        sourceRow.addView(Ui.button(this,(tab<=1?"搜索片源：":"资源：")+sourceName(selectedSource),false,v->chooseSource()),new LinearLayout.LayoutParams(0,-2,1));
+        sourceButton=Ui.button(this,(tab==HOME?"搜索片源：":"资源：")+sourceName(selectedSource),false,v->chooseSource());sourceRow.addView(sourceButton,new LinearLayout.LayoutParams(0,-2,1));
         sourceRow.addView(Ui.button(this,"夸克原画",false,v->openQuark()));header.addView(sourceRow,Ui.margin(this,-1,-2,8));
-        LinearLayout chips=Ui.row(this);String[] labels=tab==0?new String[]{"热播剧集","热门电影"}:tab==1?new String[]{"动漫热榜","动漫片库"}:tab==2?new String[]{"最近更新","4K 专区","已识别 4K","电影","剧集","链接可达"}:new String[]{"我的收藏","继续观看"};
+        LinearLayout chips=Ui.row(this);categoryChips=chips;String[] labels=tab==HOME?new String[]{"热播剧集","热门电影","动漫推荐","热播短剧"}:tab==LIBRARY?new String[]{"最近更新","4K 专区","已识别 4K","电影","剧集","动漫","短剧","链接可达"}:new String[]{"我的收藏","继续观看"};
         if(filter>=labels.length)filter=0;
-        for(int i=0;i<labels.length;i++){final int n=i;TextView b=Ui.button(this,labels[i],filter==i,v->{filter=n;content.removeAllViews();libraryScreen();});
+        for(int i=0;i<labels.length;i++){final int n=i;TextView b=Ui.button(this,labels[i],filter==i,v->selectFilter(n));
             LinearLayout.LayoutParams p=Ui.margin(this,-2,44,0);p.rightMargin=Ui.dp(this,8);chips.addView(b,p);}
         scroller.addView(chips);header.addView(scroller,Ui.margin(this,-1,-2,14));
         LinearLayout summary=Ui.row(this);count=Ui.text(this,"",12,Ui.MUTED);summary.addView(count,new LinearLayout.LayoutParams(0,-2,1));
-        if(tab==2||(tab==1&&filter==1)) summary.addView(Ui.button(this,"更多",false,v->more()));header.addView(summary,Ui.margin(this,-1,-2,10));
+        if(tab==LIBRARY) summary.addView(Ui.button(this,"更多",false,v->more()));header.addView(summary,Ui.margin(this,-1,-2,10));
+        if(tab==HOME){if(!selectedTrendProvider.isEmpty()&&!RecommendationFeeds.providers(currentGroup()).contains(selectedTrendProvider))selectedTrendProvider="";
+            trendProviderButton=Ui.button(this,"榜单来源："+(selectedTrendProvider.isEmpty()?"全部平台":selectedTrendProvider),false,v->chooseTrendProvider());header.addView(trendProviderButton,Ui.margin(this,-1,-2,8));}
         FrameLayout frame=new FrameLayout(this);content.addView(frame,new LinearLayout.LayoutParams(-1,0,1));
         RecyclerView list=new RecyclerView(this);GridLayoutManager grid=new GridLayoutManager(this,1);list.setLayoutManager(grid);list.setItemAnimator(null);
         list.addOnLayoutChangeListener((view,l,t,r,b,ol,ot,or,ob)->{int span=CatalogLogic.columns((int)((r-l-list.getPaddingLeft()-list.getPaddingRight())/getResources().getDisplayMetrics().density));if(span!=grid.getSpanCount())grid.setSpanCount(span);});
@@ -145,50 +168,101 @@ public final class MainActivity extends ComponentActivity {
         grid.setSpanSizeLookup(new GridLayoutManager.SpanSizeLookup(){public int getSpanSize(int position){return position==0||position==adapter.getItemCount()+1?grid.getSpanCount():1;}});
         filter();updateStatus();
     }
+    private void selectFilter(int selected){
+        if(selected==filter)return;filter=selected;resourceRequest++;resourceStatus="";
+        for(int i=0;i<categoryChips.getChildCount();i++)Ui.buttonPrimary((TextView)categoryChips.getChildAt(i),i==filter);
+        if(tab==HOME){if(!selectedTrendProvider.isEmpty()&&!RecommendationFeeds.providers(currentGroup()).contains(selectedTrendProvider))selectedTrendProvider="";
+            trendProviderButton.setText("榜单来源："+(selectedTrendProvider.isEmpty()?"全部平台":selectedTrendProvider));}
+        // Keep the header, both scroll containers and the adapter alive when changing categories.
+        filter();
+    }
     private void filter() {
-        if(tab==4||adapter==null)return;
-        String q=query.trim().toLowerCase(Locale.ROOT);List<Video> shown=new ArrayList<>();
-        boolean ranked=tab==0||(tab==1&&filter==0);String group=currentGroup();
-        List<Video> candidates=ranked?trends.getOrDefault(group,java.util.Collections.emptyList()):videos;
+        if(tab==SETTINGS||tab==HISTORY||adapter==null)return;
+        String q=query.trim().toLowerCase(Locale.ROOT);List<Video> shown=new ArrayList<>();boolean ranked=tab==HOME;String group=currentGroup();
+        List<Video> candidates=ranked?Recommendations.combine(trends.getOrDefault(group,java.util.Collections.emptyList()),selectedTrendProvider):tab==MINE&&filter==1?playbackHistory:videos;
         for(Video v:candidates){
             if(!q.isEmpty()&&!(v.title+v.category).toLowerCase(Locale.ROOT).contains(q))continue;
-            if(!ranked&&tab!=3&&!selectedSource.isEmpty()&&!v.source.equals(selectedSource))continue;
-            if(tab==3){if(filter==0&&!v.favorite)continue;if(filter==1&&v.position<=0)continue;}
+            if(tab==LIBRARY&&!selectedSource.isEmpty()&&!v.source.equals(selectedSource))continue;
+            if(tab==MINE){if(filter==0&&!v.favorite)continue;if(filter==1&&(v.position<=0||v.completed))continue;}
             else if(!ranked){if(v.missing()||v.isCloud())continue;
-                if(tab==1&&!CatalogLogic.anime(v))continue;
-                if(tab==2){if(filter==1&&!v.is4k()&&v.qualityHint.isEmpty())continue;if(filter==2&&!v.is4k())continue;
-                    if(filter==3&&!(v.category.contains("片")&&!v.category.contains("连续")))continue;
-                    if(filter==4&&!(v.category.contains("剧")||v.category.contains("连续")))continue;
-                    if(filter==5&&!v.reachable())continue;}}
+                if(filter==1&&!v.is4k()&&v.qualityHint.isEmpty())continue;if(filter==2&&!v.is4k())continue;
+                if(filter==3&&!(v.category.contains("片")&&!v.category.contains("连续")))continue;
+                if(filter==4&&!(v.category.contains("剧")||v.category.contains("连续")))continue;
+                if(filter==5&&!CatalogLogic.anime(v))continue;if(filter==6&&!v.category.contains("短剧"))continue;
+                if(filter==7&&!v.reachable())continue;}
             shown.add(v);
         }
-        adapter.submitList(shown);count.setText(shown.size()+" 部内容"+(ranked?" · 豆瓣"+Recommendations.label(group):tab==3?"":" · 按片源更新时间排序"));
+        adapter.submitList(shown);count.setText(shown.size()+" 部内容"+(ranked?" · 中国影视优先 · 多平台推荐":tab==MINE&&filter==1?" · 最近观看在前":tab==MINE?"":" · 按片源更新时间排序"));
         empty.setVisibility(shown.isEmpty()?View.VISIBLE:View.GONE);
-        empty.setText(tab==3?"还没有内容\n\n长按影片收藏，播放后自动记录进度。":ranked?"暂无热榜数据\n\n点击更新重试，或到片库搜索影片。":
-            "暂无匹配内容\n\n可尝试搜索、更新片源或更换资源。\n4K 专区包含片源标注，已识别 4K 依据分辨率。");updateStatus();
+        empty.setText(tab==MINE?"还没有内容\n\n长按影片收藏，播放后自动记录进度。":ranked?"暂无推荐数据\n\n点击更新重试，或切换榜单来源。":"暂无匹配内容\n\n可尝试搜索、更新片源或更换资源。");updateStatus();
     }
-    private String currentGroup(){return tab==1?Recommendations.ANIME:filter==1?Recommendations.MOVIE:Recommendations.TV;}
-    private void updateStatus(){if(status==null||tab==4)return;
+    private String currentGroup(){return Recommendations.GROUPS[Math.max(0,Math.min(filter,Recommendations.GROUPS.length-1))];}
+    private void chooseTrendProvider(){
+        List<String> names=new ArrayList<>();names.add("全部平台");names.addAll(RecommendationFeeds.providers(currentGroup()));
+        new AlertDialog.Builder(this).setTitle("推荐来源").setSingleChoiceItems(names.toArray(new String[0]),selectedTrendProvider.isEmpty()?0:names.indexOf(selectedTrendProvider),(d,n)->{
+            selectedTrendProvider=n==0?"":names.get(n);d.dismiss();trendProviderButton.setText("榜单来源："+(selectedTrendProvider.isEmpty()?"全部平台":selectedTrendProvider));filter();
+        }).setNegativeButton("关闭",null).show();
+    }
+    private void updateStatus(){if(status==null||tab==SETTINGS||tab==HISTORY)return;
+        if(!resourceStatus.isEmpty()){status.setText(resourceStatus);return;}
         if(!workStatus.isEmpty()){status.setText(workStatus);return;}
-        if(tab==0||(tab==1&&filter==0)){String group=currentGroup();long at=trendTimes.getOrDefault(group,0L);String error=trendErrors.getOrDefault(group,"");
-            status.setText(at==0?"等待获取近期热榜":(error.isEmpty()?"榜单更新 ":"显示上次榜单 ")+time(at)+(System.currentTimeMillis()-at>48*60*60*1000L?" · 缓存已过期":""));return;}
+        if(tab==HOME){String group=currentGroup();long at=trendTimes.getOrDefault(group,0L);String error=trendErrors.getOrDefault(group,"");
+            status.setText(at==0?"等待获取近期热榜":(error.isEmpty()?"榜单更新 ":"部分榜单保留缓存 · ")+time(at)+(System.currentTimeMillis()-at>48*60*60*1000L?" · 缓存已过期":""));return;}
         long time=QingYingApp.prefs(this).getLong("checkedAt",0);
         status.setText(time==0?"首次联网将更新片单 · 可先试播 4K 样片":"上次检查 "+time(time)+" · 链接状态仅供参考");}
     static String time(long millis){return new SimpleDateFormat("MM-dd HH:mm",Locale.CHINA).format(new Date(millis));}
     private void onlineSearch(){
-        if(searching)return;String term=query.trim();if(term.isEmpty()){toast("先输入片名");return;}
+        String term=query.trim();if(term.isEmpty()){toast("先输入片名");return;}
         InputMethodManager imm=(InputMethodManager)getSystemService(INPUT_METHOD_SERVICE);imm.hideSoftInputFromWindow(search.getWindowToken(),0);
-        showTab(2);searchRemote(term,1);
+        app.io.execute(()->{app.repo.rememberSearch(term);List<String> items=app.repo.searchHistory();runOnUiThread(()->{if(!isDestroyed()){searchHistory=items;renderSearchPreview();}});});
+        showTab(LIBRARY);searchRemote(term,1);
     }
     private void more(){if(searching)return;searchRemote("",++page);}
+    private void cancelSearch(){searchRequest++;if(searching)workStatus="";searching=false;}
     private void searchRemote(String term,int requestedPage){
-        searching=true;workStatus=term.isEmpty()?"加载更多影片…":"正在搜索"+sourceName(selectedSource)+"…";updateStatus();
+        int token=++searchRequest;searching=true;workStatus=term.isEmpty()?"加载更多影片…":"正在搜索"+sourceName(selectedSource)+"…";updateStatus();
         String source=selectedSource;
         app.net.execute(()->{int found=0,ok=0;
-            for(Repository.Source s:app.repo.sources())if(s.kind.equals("cms")&&(source.isEmpty()||source.equals(s.url)))try{List<Video> result=Providers.fetch(s,term,requestedPage);app.repo.merge(result);found+=result.size();ok++;}catch(Exception ignored){}
-            int total=found,success=ok;runOnUiThread(()->{searching=false;workStatus="";if(isDestroyed())return;
+            for(Repository.Source s:app.repo.sources())if(token==searchRequest&&(s.kind.equals("cms")||s.kind.equals("hongguo"))&&(source.isEmpty()||source.equals(s.url)))try{List<Video> result=Providers.fetch(s,term,requestedPage);app.repo.merge(result);found+=result.size();ok++;}catch(Exception ignored){}
+            int total=found,success=ok;runOnUiThread(()->{if(isDestroyed()||token!=searchRequest)return;searching=false;workStatus="";
                 toast(success==0?"片源暂时无法访问，请稍后重试":"已获取 "+total+" 条内容");reload();});
         });
+    }
+    private void renderSearchPreview(){
+        if(searchHistoryPreview==null||tab==HISTORY||tab==SETTINGS)return;searchHistoryPreview.removeAllViews();
+        if(!query.trim().isEmpty()||searchHistory.isEmpty())return;
+        LinearLayout heading=Ui.row(this);heading.addView(Ui.text(this,"最近搜索",12,Ui.MUTED),new LinearLayout.LayoutParams(0,-2,1));
+        heading.addView(Ui.button(this,"全部记录",false,v->{showTab(HISTORY);filter=1;historyScreen();}));searchHistoryPreview.addView(heading);
+        HorizontalScrollView scroll=new HorizontalScrollView(this);scroll.setHorizontalScrollBarEnabled(false);LinearLayout chips=Ui.row(this);
+        for(String term:searchHistory.subList(0,Math.min(5,searchHistory.size()))){TextView chip=Ui.button(this,term,false,v->repeatSearch(term));LinearLayout.LayoutParams p=Ui.margin(this,-2,48,4);p.rightMargin=Ui.dp(this,6);chips.addView(chip,p);}
+        scroll.addView(chips);searchHistoryPreview.addView(scroll);
+    }
+    private void repeatSearch(String term){query=term;showTab(LIBRARY);onlineSearch();}
+    private void historyScreen(){
+        content.removeAllViews();status=null;searchHistoryPreview=null;filter=filter==1?1:0;
+        LinearLayout header=Ui.col(this);Ui.pad(header,22,16);content.addView(header);
+        LinearLayout title=Ui.row(this);title.addView(Ui.title(this,"观看与搜索记录",24),new LinearLayout.LayoutParams(0,-2,1));
+        title.addView(Ui.button(this,"清空",false,v->clearHistory()));header.addView(title);
+        LinearLayout tabs=Ui.row(this);String[] names={"播放记录","搜索记录"};
+        for(int i=0;i<names.length;i++){final int n=i;tabs.addView(Ui.button(this,names[i],filter==i,v->{filter=n;historyScreen();}),new LinearLayout.LayoutParams(0,Ui.dp(this,48),1));}
+        header.addView(tabs,Ui.margin(this,-1,-2,16));header.addView(Ui.text(this,filter==0?"最近观看在前 · 点击继续播放":"最近搜索在前 · 点击再次搜索",12,Ui.MUTED),Ui.margin(this,-1,-2,10));
+        if(filter==0){
+            RecyclerView list=new RecyclerView(this);GridLayoutManager grid=new GridLayoutManager(this,CatalogLogic.columns(getResources().getConfiguration().screenWidthDp));list.setLayoutManager(grid);list.setItemAnimator(null);Ui.pad(list,18,8);
+            list.addOnLayoutChangeListener((v,l,t,r,b,ol,ot,or,ob)->{int span=CatalogLogic.columns((int)((r-l)/getResources().getDisplayMetrics().density));if(span!=grid.getSpanCount())grid.setSpanCount(span);});
+            adapter=new Cards();list.setAdapter(adapter);adapter.submitList(new ArrayList<>(playbackHistory));content.addView(list,new LinearLayout.LayoutParams(-1,0,1));
+            if(playbackHistory.isEmpty()){TextView message=Ui.text(this,"还没有播放记录，开始观看后会自动保存。",14,Ui.MUTED);Ui.pad(message,22,24);content.addView(message);}
+        }else{
+            ScrollView scroll=new ScrollView(this);LinearLayout rows=Ui.col(this);Ui.pad(rows,22,8);scroll.addView(rows);content.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
+            if(searchHistory.isEmpty())rows.addView(Ui.text(this,"还没有搜索记录，搜索片名后会保存在这里。",14,Ui.MUTED));
+            for(String term:searchHistory){LinearLayout row=Ui.row(this);TextView text=Ui.button(this,term,false,v->repeatSearch(term));text.setSingleLine();text.setEllipsize(TextUtils.TruncateAt.END);text.setGravity(Gravity.START|Gravity.CENTER_VERTICAL);row.addView(text,new LinearLayout.LayoutParams(0,-2,1));
+                TextView remove=Ui.button(this,"删除",false,v->app.io.execute(()->{app.repo.removeSearch(term);runOnUiThread(this::reload);}));remove.setContentDescription("删除搜索记录："+term);row.addView(remove);rows.addView(row,Ui.margin(this,-1,-2,8));}
+        }
+    }
+    private void clearHistory(){
+        boolean searches=filter==1;
+        new AlertDialog.Builder(this).setTitle(searches?"清空搜索记录":"清空播放记录")
+            .setMessage(searches?"清除本机保存的搜索词。":"清除观看历史和续播位置，收藏的影片仍会保留。")
+            .setNegativeButton("取消",null).setPositiveButton("清空",(d,w)->app.io.execute(()->{if(searches)app.repo.clearSearchHistory();else app.repo.clearPlaybackHistory();runOnUiThread(this::reload);})).show();
     }
     private void sourceScreen(){
         content.removeAllViews();ScrollView scroll=new ScrollView(this);LinearLayout body=Ui.col(this);Ui.pad(body,22,22);scroll.addView(body);content.addView(scroll);
@@ -209,7 +283,7 @@ public final class MainActivity extends ComponentActivity {
         note.setLineSpacing(Ui.dp(this,4),1);body.addView(note,Ui.margin(this,-1,-2,10));
         body.addView(Ui.button(this,"立即更新并检查",true,v->{QingYingApp.refresh(this);toast("任务已加入，将在有网络时运行");}),Ui.margin(this,-1,-2,16));
         body.addView(Ui.title(this,"关于清影",20),Ui.margin(this,-1,-2,28));
-        TextView about=Ui.text(this,"0.2.0 · Android 8.0+\n\n应用无广告 SDK、无行为统计。夸克登录在官方页面完成；登录态和播放记录保存在本应用内，不上传到清影服务器。\n\n推荐使用豆瓣公开热榜，点击后查找播放资源。4K 专区标注与实际分辨率分开显示。夸克原画和转码清晰度由文件与账号权益决定。\n\n按住视频临时 2 倍速，松手恢复。画面默认等比适应窗口，自动画质同时参考窗口像素、网络和设备能力。\n\n第三方片内广告不由本应用控制。支持纯数据接口，不执行远程 JAR / JS 插件。\n\nSintel：© Blender Foundation，CC BY 3.0，演示源 Shaka Player。",13,Ui.MUTED);
+        TextView about=Ui.text(this,"0.5.0 · Android 8.0+\n\n应用无广告 SDK、无行为统计。夸克登录在官方页面完成；登录态和播放记录保存在本应用内，不上传到清影服务器。\n\n推荐聚合红果短剧、腾讯视频、爱奇艺、哔哩哔哩、芒果TV及豆瓣公开内容，中国影视优先，点击后自动查找资源并播放。4K 专区标注与实际分辨率分开显示。夸克原画和转码清晰度由文件与账号权益决定。\n\n按住视频临时 2 倍速，松手恢复。上下滑动调音量，左右滑动调进度。点击画面显示或隐藏控件，侧边按钮锁定触控。画面默认等比缩放铺满，可切换自适应或拉伸。\n\n第三方片内广告不由本应用控制。支持纯数据接口，不执行远程 JAR / JS 插件。\n\nSintel：© Blender Foundation，CC BY 3.0，演示源 Shaka Player。",13,Ui.MUTED);
         about.setLineSpacing(Ui.dp(this,4),1);body.addView(about,Ui.margin(this,-1,-2,14));
     }
     private void toggle(LinearLayout box,String label,String key,boolean fallback){Switch s=new Switch(this);s.setText(label);s.setTextColor(Ui.TEXT);s.setTextSize(14);Ui.pad(s,0,14);
@@ -242,33 +316,41 @@ public final class MainActivity extends ComponentActivity {
         d.setOnShowListener(x->d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v->{String url=FeedParser.https(field.getText().toString());if(url.isEmpty()){field.setError("请输入 HTTPS 视频直链");return;}
             Video video=new Video();video.id=FeedParser.id("builtin",url);video.source="builtin";video.title="自定义视频";video.streams.add(new Video.Stream(url,"原画 / 自适应",0));
             app.io.execute(()->{app.repo.merge(java.util.Collections.singletonList(video));runOnUiThread(()->{d.dismiss();play(video);});});}));d.show();}
-    private void play(Video video){startActivity(new Intent(this,PlayerActivity.class).putExtra("id",video.id));}
+    private void play(Video video){startActivity(new Intent(this,video.isHongguo()?HongguoActivity.class:PlayerActivity.class).putExtra("id",video.id));}
     private void openQuark(){startActivity(new Intent(this,QuarkActivity.class));}
     private String sourceName(String url){if(url.isEmpty())return "全部片源";if(url.equals("builtin"))return "直链 / 演示";for(Repository.Source s:sources)if(s.url.equals(url))return s.name;return "所选片源";}
     private void chooseSource(){List<String> urls=new ArrayList<>(),names=new ArrayList<>();urls.add("");names.add("全部片源");for(Repository.Source s:sources){urls.add(s.url);names.add(s.name);}urls.add("builtin");names.add("直链 / 演示");
-        new AlertDialog.Builder(this).setTitle("选择资源来源").setSingleChoiceItems(names.toArray(new String[0]),urls.indexOf(selectedSource),(d,which)->{selectedSource=urls.get(which);page=1;QingYingApp.prefs(this).edit().putString("selectedSource",selectedSource).apply();d.dismiss();content.removeAllViews();libraryScreen();}).setNegativeButton("取消",null).show();}
-    private void selectResource(Video wanted,boolean online){
-        if(wanted.isCloud()){play(wanted);return;}
-        List<Video> cached=new ArrayList<>();for(Video v:videos)if(!v.isCloud()&&CatalogLogic.sameTitle(wanted,v)&&(selectedSource.isEmpty()||v.source.equals(selectedSource)))cached.add(v);
-        if(!online&&!cached.isEmpty()){resourceDialog(wanted,cached);return;}
-        int token=++resourceRequest;String chosenSource=selectedSource;
-        AlertDialog loading=new AlertDialog.Builder(this).setTitle("查找播放资源").setMessage("正在搜索 "+wanted.title).setNegativeButton("取消",(d,w)->resourceRequest++).create();loading.setOnCancelListener(d->resourceRequest++);loading.show();
-        if(resourceLoading!=null)resourceLoading.dismiss();resourceLoading=loading;
-        app.net.execute(()->{List<Video> found=new ArrayList<>(cached);
+        new AlertDialog.Builder(this).setTitle("选择资源来源").setSingleChoiceItems(names.toArray(new String[0]),urls.indexOf(selectedSource),(d,which)->{resourceRequest++;resourceStatus="";cancelSearch();selectedSource=urls.get(which);page=1;QingYingApp.prefs(this).edit().putString("selectedSource",selectedSource).apply();d.dismiss();sourceButton.setText((tab==HOME?"搜索片源：":"资源：")+sourceName(selectedSource));filter();}).setNegativeButton("取消",null).show();}
+    private void selectResource(Video wanted){
+        int token=++resourceRequest;resourceStatus="";
+        if(wanted.isCloud()||(!wanted.isRecommendation()&&!wanted.streams.isEmpty()&&!wanted.missing())){play(wanted);return;}
+        String chosenSource=selectedSource;
+        if(!Hongguo.seriesId(wanted).isEmpty()&&(chosenSource.isEmpty()||chosenSource.equals(Hongguo.SOURCE))&&sources.stream().anyMatch(s->s.url.equals(Hongguo.SOURCE))){
+            Video official=Hongguo.catalog(wanted);app.io.execute(()->{app.repo.merge(java.util.Collections.singletonList(official));runOnUiThread(()->{if(!isDestroyed()&&token==resourceRequest)play(official);});});return;
+        }
+        Video cached=CatalogLogic.bestResource(wanted,videos,chosenSource);
+        if(cached!=null){play(cached);return;}
+        resourceStatus="正在查找《"+wanted.title+"》的播放资源…";updateStatus();
+        app.net.execute(()->{
+            Video found=null;boolean failed=false;
             for(Repository.Source source:app.repo.sources()){
-                if(token!=resourceRequest)break;if(!source.kind.equals("cms")||(!chosenSource.isEmpty()&&!source.url.equals(chosenSource)))continue;
-                try{List<Video> result=Providers.fetch(source,wanted.title,1);app.repo.merge(result);for(Video v:result)if(CatalogLogic.sameTitle(wanted,v)){found.removeIf(old->old.id.equals(v.id));found.add(v);}}catch(Exception ignored){}
+                if(token!=resourceRequest)return;
+                if((!source.kind.equals("cms")&&!source.kind.equals("hongguo"))||(!chosenSource.isEmpty()&&!source.url.equals(chosenSource)))continue;
+                try{List<Video> result=Providers.fetch(source,wanted.title,1);app.repo.merge(result);
+                    found=CatalogLogic.bestResource(wanted,result,chosenSource);if(found!=null)break;
+                }catch(Exception ignored){failed=true;}
             }
-            runOnUiThread(()->{if(isDestroyed())return;loading.dismiss();if(resourceLoading==loading)resourceLoading=null;if(token!=resourceRequest)return;reload();
-                if(found.isEmpty())new AlertDialog.Builder(this).setTitle("未找到同名播放资源").setMessage("可更换片源，或查看搜索结果。热榜条目不代表一定有可播放资源。")
-                    .setPositiveButton("查看搜索结果",(d,w)->{query=wanted.title;showTab(2);}).setNegativeButton("关闭",null).show();else resourceDialog(wanted,found);
+            Video selected=found;boolean unavailable=failed;
+            runOnUiThread(()->{
+                if(isDestroyed()||isFinishing()||token!=resourceRequest)return;
+                resourceStatus="";updateStatus();
+                if(selected!=null){play(selected);return;}
+                new AlertDialog.Builder(this).setTitle(unavailable?"暂未获取到播放资源":"未找到对应播放资源")
+                    .setMessage(unavailable?"部分片源暂时无法连接，可以重试或更换片源搜索。":"当前片源没有找到对应片名和年份的资源，可更换片源或查看搜索结果。")
+                    .setPositiveButton("查看搜索结果",(d,w)->{query=wanted.title;showTab(LIBRARY);onlineSearch();})
+                    .setNeutralButton("重试",(d,w)->selectResource(wanted)).setNegativeButton("关闭",null).show();
             });
         });
-    }
-    private void resourceDialog(Video wanted,List<Video> options){
-        String[] labels=new String[options.size()];for(int i=0;i<labels.length;i++){Video v=options.get(i);labels[i]=sourceName(v.source)+"\n"+(v.is4k()?"已识别 4K":v.qualityHint.isEmpty()?"画质待识别":v.qualityHint)+" · "+v.streams.size()+" 个分集 / 线路";}
-        new AlertDialog.Builder(this).setTitle(wanted.title+" · 资源选择").setItems(labels,(d,which)->play(options.get(which)))
-            .setNeutralButton("在线查找更多",(d,w)->selectResource(wanted,true)).setNegativeButton("取消",null).show();
     }
     private void toast(String text){Toast.makeText(this,text,Toast.LENGTH_LONG).show();}
 
@@ -288,7 +370,7 @@ public final class MainActivity extends ComponentActivity {
         public void onBindViewHolder(RecyclerView.ViewHolder holder,int position){if(child.getParent()!=holder.itemView){if(child.getParent()!=null)((ViewGroup)child.getParent()).removeView(child);((FrameLayout)holder.itemView).addView(child,new FrameLayout.LayoutParams(-1,-2));}}
     }
     private final class Card extends RecyclerView.ViewHolder {
-        final ImageView poster;final TextView title,meta,badge,checked;final LinearLayout card;
+        final ImageView poster;final TextView title,meta,badge,checked,description,removeHistory;final LinearLayout card;
         Card(){super(Ui.row(MainActivity.this));card=(LinearLayout)itemView;Ui.pad(card,10,10);card.setBackground(Ui.shape(MainActivity.this,Ui.CARD,18));
             RecyclerView.LayoutParams params=new RecyclerView.LayoutParams(-1,-2);params.bottomMargin=Ui.dp(MainActivity.this,12);params.leftMargin=Ui.dp(MainActivity.this,4);params.rightMargin=Ui.dp(MainActivity.this,4);card.setLayoutParams(params);
             poster=new ImageView(MainActivity.this);poster.setScaleType(ImageView.ScaleType.CENTER_CROP);poster.setBackground(Ui.shape(MainActivity.this,0xff263a34,12));poster.setClipToOutline(true);
@@ -297,14 +379,28 @@ public final class MainActivity extends ComponentActivity {
             badge=Ui.text(MainActivity.this,"",11,Ui.GREEN);words.addView(badge);
             title=Ui.title(MainActivity.this,"",17);title.setMaxLines(2);title.setEllipsize(TextUtils.TruncateAt.END);words.addView(title,Ui.margin(MainActivity.this,-1,-2,10));
             meta=Ui.text(MainActivity.this,"",11,Ui.MUTED);meta.setMaxLines(2);words.addView(meta,Ui.margin(MainActivity.this,-1,-2,10));
-            checked=Ui.text(MainActivity.this,"",11,Ui.MUTED);words.addView(checked,Ui.margin(MainActivity.this,-1,-2,10));
+            description=Ui.text(MainActivity.this,"",12,Ui.MUTED);description.setMaxLines(2);description.setEllipsize(TextUtils.TruncateAt.END);description.setLineSpacing(Ui.dp(MainActivity.this,3),1);words.addView(description,Ui.margin(MainActivity.this,-1,-2,8));
+            checked=Ui.text(MainActivity.this,"",11,Ui.MUTED);checked.setMaxLines(3);checked.setEllipsize(TextUtils.TruncateAt.END);words.addView(checked,Ui.margin(MainActivity.this,-1,-2,10));
+            removeHistory=Ui.button(MainActivity.this,"移除记录",false,null);words.addView(removeHistory,Ui.margin(MainActivity.this,-2,48,8));
         }
-        void bind(Video video){title.setText(video.title);badge.setText(video.isRecommendation()?"TOP "+video.trendRank+" · "+video.category:(video.is4k()?"4K UHD  ·  ":!video.qualityHint.isEmpty()?"4K 候选 · ":"")+video.category+(video.favorite?"  ★":""));
+        void bind(Video video){title.setText(video.title);badge.setText(video.isRecommendation()?(Recommendations.domestic(video)?"中国影视 · ":"")+video.category:(video.is4k()?"4K UHD  ·  ":!video.qualityHint.isEmpty()?"4K 候选 · ":"")+video.category+(video.favorite?"  ★":""));
             badge.setTextColor(video.is4k()?Ui.GOLD:Ui.GREEN);meta.setText(video.updated.isEmpty()?video.dateLabel():"源更新 "+video.updated.substring(0,10));
-            checked.setText(video.isRecommendation()?"点击选择播放资源":video.isCloud()?"夸克网盘 · 播放前获取地址":video.position>0?"续播 "+PlayerActivity.duration(video.position)+"  ·  "+video.status():video.status()+(video.checked()>0?" · "+time(video.checked()):""));
-            if(video.isRecommendation())meta.setText(video.year+(video.trendScore>0?" · 豆瓣 "+video.trendScore:" · 暂无评分"));
-            Posters.load(poster,video.poster);card.setContentDescription(video.title+"，"+video.status());card.setOnClickListener(v->selectResource(video,video.isRecommendation()));
-            card.setOnLongClickListener(v->{if(video.isRecommendation()){selectResource(video,true);return true;}app.io.execute(()->{app.repo.favorite(video.id);runOnUiThread(()->{toast(video.favorite?"已取消收藏":"已收藏");reload();});});return true;});
+            checked.setText(video.isRecommendation()?video.credit+" · 点击播放":video.isCloud()?"夸克网盘 · 播放前获取地址":video.isHongguo()?"红果官方网页 · 点击打开播放器":video.position>0?"续播 "+PlayerActivity.duration(video.position)+"  ·  "+video.status():video.status()+(video.checked()>0?" · "+time(video.checked()):""));
+            meta.setVisibility(View.VISIBLE);
+            if(video.isRecommendation()){
+                List<String> details=new ArrayList<>();if(!video.year.isEmpty())details.add(video.year);if(!video.region.isEmpty())details.add(video.region);if(video.trendScore>0)details.add("豆瓣 "+video.trendScore);
+                meta.setText(String.join(" · ",details));if(details.isEmpty())meta.setVisibility(View.GONE);
+            }
+            description.setText(android.text.Html.fromHtml(video.description,android.text.Html.FROM_HTML_MODE_LEGACY).toString().replaceAll("\\s+"," ").trim());
+            description.setVisibility(video.isRecommendation()?View.VISIBLE:View.GONE);
+            if(video.isRecommendation()&&description.getText().length()==0)description.setText("简介暂未提供");
+            removeHistory.setVisibility(tab==HISTORY?View.VISIBLE:View.GONE);
+            if(tab==HISTORY){badge.setText(sourceName(video.source));meta.setText(video.lastPlayed>0?"观看 "+time(video.lastPlayed):"旧版播放记录");
+                checked.setText((video.lastEpisode.isEmpty()?"":video.lastEpisode+" · ")+(video.completed?"已看完 · 点击重播":video.position>0?"已播放 "+PlayerActivity.duration(video.position)+(video.duration>0?" / "+PlayerActivity.duration(video.duration):""):"点击从头播放"));
+                removeHistory.setContentDescription("移除播放记录："+video.title);removeHistory.setOnClickListener(v->app.io.execute(()->{app.repo.removePlaybackHistory(video.id);runOnUiThread(MainActivity.this::reload);}));}
+            poster.setContentDescription(video.title+" 海报");
+            Posters.load(poster,video.poster);card.setContentDescription(video.title+"，"+(video.isRecommendation()?video.description:video.status()));card.setOnClickListener(v->selectResource(video));
+            card.setOnLongClickListener(v->{if(video.isRecommendation()){selectResource(video);return true;}app.io.execute(()->{app.repo.favorite(video.id);runOnUiThread(()->{toast(video.favorite?"已取消收藏":"已收藏");reload();});});return true;});
         }
     }
 }

@@ -30,8 +30,12 @@ final class Ui {
     static void pad(View v, int x, int y) { v.setPadding(dp(v.getContext(),x),dp(v.getContext(),y),dp(v.getContext(),x),dp(v.getContext(),y)); }
     static TextView button(Context c, String label, boolean primary, View.OnClickListener action) {
         TextView t = text(c,label,14,primary?BG:TEXT); t.setGravity(Gravity.CENTER); pad(t,16,12);
-        t.setMinHeight(dp(c,48)); t.setBackground(new RippleDrawable(ColorStateList.valueOf(0x3370E1BF),shape(c,primary?GREEN:CARD,14),null));
+        t.setMinHeight(dp(c,48));buttonPrimary(t,primary);
         t.setOnClickListener(action); t.setFocusable(true); return t;
+    }
+    static void buttonPrimary(TextView button,boolean primary){
+        button.setTextColor(primary?BG:TEXT);button.setSelected(primary);
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(0x3370E1BF),shape(button.getContext(),primary?GREEN:CARD,14),null));
     }
     static LinearLayout.LayoutParams margin(Context c, int width, int height, int top) {
         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(width < 0 ? width : dp(c,width),height < 0 ? height : dp(c,height));

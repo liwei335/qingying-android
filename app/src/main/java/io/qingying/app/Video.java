@@ -8,9 +8,12 @@ import java.util.List;
 public final class Video {
     public String id = "", title = "", description = "", poster = "", published = "";
     public String source = "", credit = "", page = "", updated = "", category = "", lastStream = "", lastEpisode = "";
-    public long discovered, position, duration;
+    public long discovered, position, duration, lastPlayed;
+    public boolean completed,legacyHistory;
     public boolean favorite;
+    public String hongguoSeriesId = "";
     public String cloudFileId = "", trendGroup = "", year = "", qualityHint = "";
+    public String region = "", trendProvider = "", trendFeed = "";
     public int trendRank;
     public double trendScore;
     public final List<Stream> streams = new ArrayList<>();
@@ -30,6 +33,7 @@ public final class Video {
 
     public boolean is4k() { for (Stream s : streams) if (s.height >= 2160 || s.width >= 3840) return true; return false; }
     public boolean isCloud() { return !cloudFileId.isEmpty(); }
+    public boolean isHongguo() { return source.equals(Hongguo.SOURCE)&&hongguoSeriesId.matches("[0-9]+"); }
     public boolean isRecommendation() { return !trendGroup.isEmpty(); }
     public boolean reachable() { for (Stream s : streams) if (s.state.equals("ok")) return true; return false; }
     public boolean missing() {
@@ -51,14 +55,14 @@ public final class Video {
             Stream local = new Stream("", "网盘原画", 0);
             for (Stream s : streams) { local.width = Math.max(local.width, s.width); local.height = Math.max(local.height, s.height); }
             array.put(local.json());
-        } else for (Stream s : streams) array.put(s.json());
+        } else for (Stream s : streams) {JSONObject saved=s.json();if(isHongguo())saved.put("url","");array.put(saved);}
         return new JSONObject().put("id", id).put("title", title).put("description", description)
             .put("poster", poster).put("published", published).put("source", source).put("credit", credit)
-            .put("page", page).put("updated", updated).put("category", category).put("lastStream", isCloud()?"":lastStream).put("lastEpisode", lastEpisode)
-            .put("discovered", discovered).put("favorite", favorite)
+            .put("page", page).put("updated", updated).put("category", category).put("lastStream", isCloud()?"":isHongguo()?Hongguo.savedPlayerUrl(lastStream,hongguoSeriesId):lastStream).put("lastEpisode", lastEpisode)
+            .put("discovered", discovered).put("favorite", favorite).put("lastPlayed", lastPlayed).put("completed", completed).put("legacyHistory", legacyHistory)
             .put("position", position).put("duration", duration).put("streams", array)
-            .put("cloudFileId", cloudFileId).put("trendGroup", trendGroup).put("trendRank", trendRank)
-            .put("trendScore", trendScore).put("year", year).put("qualityHint", qualityHint);
+            .put("hongguoSeriesId",hongguoSeriesId).put("cloudFileId", cloudFileId).put("trendGroup", trendGroup).put("trendRank", trendRank)
+            .put("region", region).put("trendProvider", trendProvider).put("trendFeed", trendFeed).put("trendScore", trendScore).put("year", year).put("qualityHint", qualityHint);
     }
     public static Video from(JSONObject j) {
         Video v = new Video();
@@ -68,8 +72,11 @@ public final class Video {
         v.updated = j.optString("updated"); v.category = j.optString("category"); v.lastStream = j.optString("lastStream");
         v.lastEpisode = j.optString("lastEpisode");
         v.favorite = j.optBoolean("favorite"); v.position = j.optLong("position"); v.duration = j.optLong("duration");
-        v.cloudFileId = j.optString("cloudFileId"); v.trendGroup = j.optString("trendGroup");
+        v.hongguoSeriesId=j.optString("hongguoSeriesId");v.cloudFileId = j.optString("cloudFileId"); v.trendGroup = j.optString("trendGroup");
         v.trendRank = j.optInt("trendRank"); v.trendScore = j.optDouble("trendScore", 0);
+        v.region = j.optString("region"); v.trendProvider = j.optString("trendProvider"); v.trendFeed = j.optString("trendFeed");
+        v.lastPlayed = j.optLong("lastPlayed"); v.completed = j.optBoolean("completed");
+        v.legacyHistory = j.optBoolean("legacyHistory",!j.has("lastPlayed")&&(v.position>0||!v.lastStream.isEmpty()||!v.lastEpisode.isEmpty()));
         v.year = j.optString("year"); v.qualityHint = j.optString("qualityHint");
         JSONArray a = j.optJSONArray("streams");
         if (a != null) for (int i = 0; i < a.length(); i++) {

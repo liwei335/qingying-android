@@ -25,11 +25,16 @@ public final class SyncWorker extends Worker {
             List<Repository.Source> sources = repo.sources();
             int success = 0;
             long deadline = System.currentTimeMillis() + 180_000;
-            for(String group:Recommendations.GROUPS) {
-                if(isStopped())return Result.retry();progress("更新"+Recommendations.label(group));
-                try{repo.recommendations(group,Recommendations.fetch(group),"");}
-                catch(Exception e){repo.recommendations(group,java.util.Collections.emptyList(),"暂时无法更新，保留上次榜单");}
-            }
+            progress("更新红果、腾讯、爱奇艺、哔哩哔哩、芒果与豆瓣推荐…");
+            List<Callable<Void>> rankings=new ArrayList<>();
+            for(RecommendationFeeds.Feed feed:RecommendationFeeds.ALL)rankings.add(()->{
+                if(isStopped()||Thread.currentThread().isInterrupted())return null;
+                try{List<Video> items=RecommendationFeeds.fetch(feed);if(!isStopped()&&!Thread.currentThread().isInterrupted())repo.recommendations(feed.id,items,"");}
+                catch(Exception e){if(!isStopped()&&!Thread.currentThread().isInterrupted())repo.recommendations(feed.id,java.util.Collections.emptyList(),"暂时无法更新，保留上次榜单");}
+                return null;
+            });
+            List<java.util.concurrent.Future<Void>> ranked=pool.invokeAll(rankings,65,TimeUnit.SECONDS);
+            for(int i=0;i<ranked.size();i++)if(ranked.get(i).isCancelled())repo.recommendations(RecommendationFeeds.ALL.get(i).id,java.util.Collections.emptyList(),"更新超时，保留上次榜单");
             for (Repository.Source source : sources) {
                 if (isStopped() || System.currentTimeMillis() > deadline) break;
                 progress("更新片源：" + source.name);
@@ -46,7 +51,7 @@ public final class SyncWorker extends Worker {
             List<Video> videos = repo.videos();
             videos.sort(java.util.Comparator.comparingLong(Video::checked));
             for (Video v : videos) {
-                if(v.isCloud())continue;
+                if(v.isCloud()||v.isHongguo())continue;
                 int n = 0;
                 for (Video.Stream s : v.streams) {
                     if (checks.size() >= 120 || n++ >= 2) break;

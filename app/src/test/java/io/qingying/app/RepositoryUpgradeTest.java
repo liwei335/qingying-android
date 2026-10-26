@@ -26,7 +26,7 @@ public class RepositoryUpgradeTest {
         ContentValues values=new ContentValues();values.put("id",original.id);values.put("source",original.source);values.put("body",original.json().toString());db.insertOrThrow("videos",null,values);db.setVersion(1);db.close();
         Repository repo=new Repository(context);Video restored=repo.get(original.id);
         assertNotNull(restored);assertTrue(restored.favorite);assertEquals(42000,restored.position);assertEquals("第3集",restored.lastEpisode);
-        assertTrue(repo.hasSource("https://example.test/api"));assertTrue(repo.sources().stream().anyMatch(s->s.url.contains("t=62")));assertEquals(2,repo.getReadableDatabase().getVersion());repo.close();context.deleteDatabase("catalog.db");
+        assertTrue(repo.hasSource("https://example.test/api"));assertTrue(repo.sources().stream().anyMatch(s->s.url.contains("t=62")));assertEquals(4,repo.getReadableDatabase().getVersion());repo.close();context.deleteDatabase("catalog.db");
     }
     @Test public void failedRankRefreshKeepsOldDataAndOriginalTimestamp() throws Exception {
         Context context=RuntimeEnvironment.getApplication();context.deleteDatabase("catalog.db");Repository repo=new Repository(context);

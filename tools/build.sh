@@ -9,5 +9,5 @@ else
     gradle :app:testDebugUnitTest :app:lintDebug :app:assembleRelease --console=plain
 fi
 mkdir -p dist
-cp app/build/outputs/apk/release/app-release.apk dist/QingYing-0.2.0.apk
-sha256sum dist/QingYing-0.2.0.apk > dist/SHA256SUMS
+cp app/build/outputs/apk/release/app-release.apk dist/QingYing-0.5.0.apk
+sha256sum dist/QingYing-0.5.0.apk > dist/SHA256SUMS

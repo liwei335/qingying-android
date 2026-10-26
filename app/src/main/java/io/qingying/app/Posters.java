@@ -25,7 +25,8 @@ final class Posters {
         WeakReference<ImageView> ref = new WeakReference<>(view);
         POOL.execute(() -> {
             try {
-                Net.Response r = Net.get(url, 1024 * 1024, false); if (r.code != 200) return;
+                Net.Response r = Net.get(url, 2 * 1024 * 1024, false,
+                    RecommendationFeeds.UA,RecommendationFeeds.posterReferer(url)); if (r.code != 200) return;
                 BitmapFactory.Options o = new BitmapFactory.Options(); o.inJustDecodeBounds = true;
                 BitmapFactory.decodeByteArray(r.body,0,r.body.length,o);
                 o.inSampleSize = 1;
